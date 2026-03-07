@@ -1,50 +1,41 @@
-import torch
-import numpy as np
+"""
+Play/evaluate trained DQN agent with visualization
+"""
 import sys
-import os
+import numpy as np
+from pathlib import Path
 
 from homework2 import Hw2Env
-from train import QNetwork, DQNAgent, HYPERPARAMS
-
-def load_trained_agent(checkpoint_path, device):
-    """Load a trained agent from checkpoint"""
-    print(f"Loading model from: {checkpoint_path}")
-    
-    # Create agent
-    agent = DQNAgent(n_actions=8, device=device)
-    
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    agent.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
-    agent.target_net.load_state_dict(checkpoint['target_net_state_dict'])
-    
-    # Set to evaluation mode (no exploration)
-    agent.epsilon = 0.0
-    agent.policy_net.eval()
-    
-    print(f"✓ Model loaded successfully")
-    print(f"  Trained episodes: {checkpoint['episode'] + 1}")
-    print(f"  Training epsilon: {checkpoint['epsilon']:.4f}")
-    
-    return agent
+from agent import DQNAgent
+from config import HYPERPARAMS, ENV_CONFIG
+from utils import (
+    get_latest_checkpoint_dir,
+    find_latest_checkpoint,
+    load_checkpoint
+)
 
 
-def play_episodes(agent, n_episodes=5, render_mode="gui", verbose=True):
+def play_episodes(agent, n_episodes=5, verbose=True):
     """
-    Play episodes with the trained agent
+    Play episodes with trained agent
     
     Args:
         agent: Trained DQNAgent
         n_episodes: Number of episodes to play
-        render_mode: "gui" for visualization, "offscreen" for headless
         verbose: Print detailed step information
+        
+    Returns:
+        results: Dictionary with performance metrics
     """
     print("\n" + "="*60)
     print(f"PLAYING {n_episodes} EPISODES WITH TRAINED AGENT")
     print("="*60)
     
     # Create environment with GUI
-    env = Hw2Env(n_actions=8, render_mode=render_mode)
+    env = Hw2Env(
+        n_actions=ENV_CONFIG["n_actions"], 
+        render_mode=ENV_CONFIG["render_mode_eval"]
+    )
     
     results = {
         'rewards': [],
@@ -66,16 +57,11 @@ def play_episodes(agent, n_episodes=5, render_mode="gui", verbose=True):
         print(f"{'='*60}")
         
         while not done:
-            # Select best action (greedy policy)
-            with torch.no_grad():
-                state_t = state.unsqueeze(0).to(agent.device)
-                q_values = agent.policy_net(state_t)
-                action = q_values.argmax().item()
-                
-                if verbose:
-                    print(f"Step {episode_steps + 1}:")
-                    print(f"  Action: {action}")
-                    print(f"  Q-values: {q_values.cpu().numpy()[0]}")
+            # Select best action (eval mode = greedy)
+            action = agent.select_action(state, eval_mode=True)
+            
+            if verbose:
+                print(f"Step {episode_steps + 1}: Action={action}")
             
             # Step environment
             next_state, reward, is_terminal, is_truncated = env.step(action)
@@ -83,10 +69,6 @@ def play_episodes(agent, n_episodes=5, render_mode="gui", verbose=True):
             
             if verbose:
                 print(f"  Reward: {reward:.4f}")
-                high_level = env.high_level_state()
-                print(f"  EE pos: [{high_level[0]:.3f}, {high_level[1]:.3f}]")
-                print(f"  Obj pos: [{high_level[2]:.3f}, {high_level[3]:.3f}]")
-                print(f"  Goal pos: [{high_level[4]:.3f}, {high_level[5]:.3f}]")
             
             state = next_state
             cumulative_reward += reward
@@ -111,7 +93,7 @@ def play_episodes(agent, n_episodes=5, render_mode="gui", verbose=True):
         print(f"  Steps: {episode_steps}")
         print(f"{'-'*60}")
     
-    # Print overall summary
+    # Overall summary
     print("\n" + "="*60)
     print("OVERALL SUMMARY")
     print("="*60)
@@ -130,47 +112,59 @@ def play_episodes(agent, n_episodes=5, render_mode="gui", verbose=True):
 
 
 def main():
-    # Configuration
-    checkpoint_path = "checkpoints/final_model.pth"  # Default checkpoint
+    """Main entry point"""
+    print("="*60)
+    print("DQN AGENT PLAYER")
+    print("="*60)
+    
+    # Parse arguments
+    checkpoint_dir = None
     n_episodes = 5
     verbose = True
     
-    # Parse command line arguments
     if len(sys.argv) > 1:
-        checkpoint_path = sys.argv[1]
+        checkpoint_dir = Path(sys.argv[1])
     if len(sys.argv) > 2:
         n_episodes = int(sys.argv[2])
     if len(sys.argv) > 3:
         verbose = sys.argv[3].lower() == 'true'
     
-    # Check if checkpoint exists
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint not found at {checkpoint_path}")
-        print("\nAvailable checkpoints:")
-        checkpoint_dir = "checkpoints"
-        if os.path.exists(checkpoint_dir):
-            for f in os.listdir(checkpoint_dir):
-                if f.endswith('.pth'):
-                    print(f"  - {os.path.join(checkpoint_dir, f)}")
-        else:
-            print(f"  Checkpoint directory '{checkpoint_dir}' not found!")
-            print("  Please train the model first using: python3 train_dqn.py")
+    # Find checkpoint directory
+    if checkpoint_dir is None:
+        print("No checkpoint specified, looking for latest...")
+        checkpoint_dir = get_latest_checkpoint_dir()
+        if checkpoint_dir is None:
+            print("Error: No checkpoints found!")
+            print("Please train a model first: python3 train.py")
+            return
+        print(f"Found latest checkpoint: {checkpoint_dir}")
+    else:
+        if not checkpoint_dir.exists():
+            print(f"Error: Checkpoint directory not found: {checkpoint_dir}")
+            return
+    
+    # Find checkpoint file
+    checkpoint_path = find_latest_checkpoint(checkpoint_dir)
+    if checkpoint_path is None:
+        print(f"Error: No checkpoint files found in {checkpoint_dir}")
         return
     
-    # Load agent
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    agent = load_trained_agent(checkpoint_path, device)
+    print(f"Loading checkpoint: {checkpoint_path}")
+    print("="*60 + "\n")
     
-    # Play episodes with GUI
-    play_episodes(agent, n_episodes=n_episodes, render_mode="gui", verbose=verbose)
+    # Load agent
+    agent = DQNAgent(
+        n_actions=ENV_CONFIG["n_actions"], 
+        device=HYPERPARAMS['device']
+    )
+    
+    episode, _, _ = load_checkpoint(agent, checkpoint_path)
+    print(f"✓ Model loaded (trained for {episode + 1} episodes)")
+    print(f"✓ Epsilon: {agent.epsilon:.4f} (will use greedy policy)")
+    
+    # Play episodes
+    play_episodes(agent, n_episodes=n_episodes, verbose=verbose)
 
 
 if __name__ == "__main__":
-    print("="*60)
-    print("DQN AGENT PLAYER")
-    print("="*60)
-    print("Usage: python3 play.py [checkpoint_path] [n_episodes] [verbose]")
-    print("Example: python3 play.py checkpoints/final_model.pth 10 True")
-    print("="*60 + "\n")
-    
     main()
