@@ -81,11 +81,17 @@ class Hw2Env(environment.BaseEnv):
         self._set_ee_in_cartesian(target_pos, rotation=[-90, 0, 180], n_splits=30, threshold=0.04)
         self._t += 1
 
-        state = self.state()
+        # Only get state if in offscreen mode
+        if self._render_mode == "offscreen":
+            state = self.state()
+        else:
+            state = None  # Don't get state in GUI mode
+        
         reward = self.reward()
         terminal = self.is_terminal()
         truncated = self.is_truncated()
         return state, reward, terminal, truncated
+
 
 
 if __name__ == "__main__":

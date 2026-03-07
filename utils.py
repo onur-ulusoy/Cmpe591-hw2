@@ -82,7 +82,13 @@ def load_checkpoint(agent, checkpoint_path):
         rewards_history: List of episode rewards
         rps_history: List of reward-per-step values
     """
-    checkpoint = torch.load(checkpoint_path, map_location=agent.device)
+    # Load with weights_only=False since we're loading training data too
+    # This is safe if you trust your own checkpoints
+    checkpoint = torch.load(
+        checkpoint_path, 
+        map_location=agent.device,
+        weights_only=False  # Required for PyTorch 2.6+
+    )
     
     agent.load_state_dict(checkpoint['agent_state'])
     
@@ -174,8 +180,7 @@ def plot_training_results(rewards_history, rps_history, save_path):
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
     
-    # Plot 3: Success Rate (assuming terminal = success)
-    # This is a simplified version - you might want to track this explicitly
+    # Plot 3: Training Progress
     axes[2].plot(rewards_history, color='green', alpha=0.4, linewidth=1)
     if len(rewards_history) > 10:
         window = min(20, len(rewards_history) // 5)
