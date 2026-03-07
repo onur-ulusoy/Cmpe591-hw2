@@ -5,7 +5,7 @@ import torch
 
 HYPERPARAMS = {
     # Training
-    "n_episodes": 2,
+    "n_episodes": 300,
     "n_actions": 8,
     
     # DQN Parameters
@@ -25,7 +25,7 @@ HYPERPARAMS = {
     "buffer_length": 10000,
     
     # Checkpointing
-    "checkpoint_freq": 1,  # Save every N episodes
+    "checkpoint_freq": 50,  # Save every N episodes
     
     # Device
     "device": "cuda" if torch.cuda.is_available() else "cpu"
