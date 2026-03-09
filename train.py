@@ -1,8 +1,10 @@
 """
-Training script for DQN agent
+Training script for DQN agent (High-Level State Version)
 """
 import time
 import sys
+import torch
+import numpy as np
 from pathlib import Path
 
 from homework2 import Hw2Env
@@ -20,10 +22,7 @@ from utils import (
 
 def train(resume_from=None):
     """
-    Train DQN agent
-    
-    Args:
-        resume_from: Path to checkpoint directory to resume from (optional)
+    Train DQN agent using High-Level State
     """
     # Create checkpoint directory
     if resume_from:
@@ -37,18 +36,21 @@ def train(resume_from=None):
     logger = Logger(checkpoint_dir / "training.log")
     
     logger.log("="*60)
-    logger.log("DQN TRAINING - Robotic Pushing Task")
+    logger.log("DQN TRAINING - Robotic Pushing Task (High-Level State)")
     logger.log("="*60)
     logger.log(f"Device: {HYPERPARAMS['device']}")
     logger.log(f"Episodes: {HYPERPARAMS['n_episodes']}")
     logger.log(f"Checkpoint directory: {checkpoint_dir}")
     logger.log("="*60)
     
-    # Initialize environment and agent
+    # Initialize environment
+    # Note: render_mode can be 'offscreen' or None since we don't use pixels for training
     env = Hw2Env(
         n_actions=ENV_CONFIG["n_actions"], 
         render_mode=ENV_CONFIG["render_mode_train"]
     )
+    
+    # Initialize Agent
     agent = DQNAgent(
         n_actions=ENV_CONFIG["n_actions"], 
         device=HYPERPARAMS['device']
@@ -80,7 +82,10 @@ def train(resume_from=None):
         episode_start_time = time.time()
         
         env.reset()
-        state = env.state()
+        
+        # Get High-Level State ---
+        state_np = env.high_level_state()
+        state = torch.tensor(state_np, dtype=torch.float32)
         
         done = False
         cumulative_reward = 0.0
@@ -88,10 +93,21 @@ def train(resume_from=None):
         
         # Episode loop
         while not done:
+            # Select action
             action = agent.select_action(state)
-            next_state, reward, is_terminal, is_truncated = env.step(action)
+            
+            # Step environment
+            # NOTE: env.step returns (pixel_state, reward, term, trunc)
+            # We ignore the pixel_state (_) and get high_level_state manually
+            _, reward, is_terminal, is_truncated = env.step(action)
+            
+            # Get next high-level state
+            next_state_np = env.high_level_state()
+            next_state = torch.tensor(next_state_np, dtype=torch.float32)
+            
             done = is_terminal or is_truncated
             
+            # Push to buffer
             agent.buffer.push(state, action, reward, next_state, is_terminal)
             
             state = next_state
@@ -101,7 +117,7 @@ def train(resume_from=None):
             
             # Update network
             if global_step % HYPERPARAMS["update_freq"] == 0:
-                agent.update()
+                loss = agent.update()
 
         # Episode metrics
         episode_time = time.time() - episode_start_time
@@ -178,7 +194,6 @@ def main():
     checkpoint_dir = train(resume_from=resume_from)
     print(f"\n✓ Training complete! Results saved to: {checkpoint_dir}")
     print(f"\nTo visualize the trained agent, run:")
-    print(f"  python3 play.py")
     print(f"  python3 play.py {checkpoint_dir}")
 
 

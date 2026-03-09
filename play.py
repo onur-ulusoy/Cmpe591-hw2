@@ -48,7 +48,10 @@ def offscreen_worker(checkpoint_path, seed_queue, action_queue):
             # Reset environment with seed
             env._create_scene(seed=seed)
             env.reset()
-            state = env.state()
+            
+            # --- FIX: Use high_level_state instead of state() (pixels) ---
+            state_np = env.high_level_state()
+            state = torch.tensor(state_np, dtype=torch.float32)
             
             # Send ready signal
             action_queue.put("READY")
@@ -68,10 +71,13 @@ def offscreen_worker(checkpoint_path, seed_queue, action_queue):
                     break
                 
                 # Step environment
-                next_state, reward, is_terminal, is_truncated = env.step(action)
+                # Note: We ignore the returned state (pixels)
+                _, reward, is_terminal, is_truncated = env.step(action)
                 done = is_terminal or is_truncated
                 
-                state = next_state
+                # --- FIX: Update state with high_level_state ---
+                next_state_np = env.high_level_state()
+                state = torch.tensor(next_state_np, dtype=torch.float32)
                 
                 # Send done status
                 action_queue.put(("DONE", is_terminal, is_truncated))
@@ -191,18 +197,18 @@ def play_episodes_with_agent(checkpoint_path, n_episodes=5, verbose=True, delay=
             results['rps'].append(rps)
             results['steps'].append(episode_steps)
             
-            if is_terminal:
-                results['successes'] += 1
-                status = "✓ SUCCESS - Goal reached!"
-            else:
-                status = "✗ FAILED - Timeout"
+            # if is_terminal:
+            #     results['successes'] += 1
+            #     status = "✓ SUCCESS - Goal reached!"
+            # else:
+            #     status = "✗ FAILED - Timeout"
             
-            print(f"\n{'-'*60}")
-            print(f"Episode Result: {status}")
-            print(f"  Total Reward: {cumulative_reward:.4f}")
-            print(f"  RPS: {rps:.4f}")
-            print(f"  Steps: {episode_steps}")
-            print(f"{'-'*60}")
+            # print(f"\n{'-'*60}")
+            # print(f"Episode Result: {status}")
+            # print(f"  Total Reward: {cumulative_reward:.4f}")
+            # print(f"  RPS: {rps:.4f}")
+            # print(f"  Steps: {episode_steps}")
+            # print(f"{'-'*60}")
             
             # Pause between episodes
             time.sleep(1.0)
