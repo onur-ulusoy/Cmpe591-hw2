@@ -8,53 +8,28 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 
-
 def create_checkpoint_dir():
-    """
-    Create timestamped checkpoint directory
-    
-    Returns:
-        checkpoint_dir: Path to created directory
-    """
+    """Create timestamped checkpoint directory"""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     checkpoint_dir = Path("checkpoints") / timestamp
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     return checkpoint_dir
 
-
 def get_latest_checkpoint_dir():
-    """
-    Get the most recent checkpoint directory
-    
-    Returns:
-        latest_dir: Path to latest checkpoint directory, or None if none exist
-    """
+    """Get the most recent checkpoint directory"""
     checkpoints_root = Path("checkpoints")
     if not checkpoints_root.exists():
         return None
-    
-    # Get all subdirectories
     subdirs = [d for d in checkpoints_root.iterdir() if d.is_dir()]
     if not subdirs:
         return None
-    
-    # Sort by modification time and return latest
-    latest_dir = max(subdirs, key=lambda d: d.stat().st_mtime)
-    return latest_dir
-
+    return max(subdirs, key=lambda d: d.stat().st_mtime)
 
 def save_checkpoint(agent, episode, rewards_history, rps_history, 
+                   loss_history, epsilon_history,
                    checkpoint_dir, filename="checkpoint.pth"):
     """
-    Save training checkpoint
-    
-    Args:
-        agent: DQNAgent instance
-        episode: Current episode number
-        rewards_history: List of episode rewards
-        rps_history: List of reward-per-step values
-        checkpoint_dir: Directory to save checkpoint
-        filename: Checkpoint filename
+    Save training checkpoint with extended metrics
     """
     checkpoint_path = Path(checkpoint_dir) / filename
     
@@ -63,52 +38,41 @@ def save_checkpoint(agent, episode, rewards_history, rps_history,
         'agent_state': agent.get_state_dict(),
         'rewards_history': rewards_history,
         'rps_history': rps_history,
+        'loss_history': loss_history,       # Added
+        'epsilon_history': epsilon_history  # Added
     }
     
     torch.save(checkpoint, checkpoint_path)
     return checkpoint_path
 
-
 def load_checkpoint(agent, checkpoint_path):
     """
-    Load training checkpoint
-    
-    Args:
-        agent: DQNAgent instance to load into
-        checkpoint_path: Path to checkpoint file
-        
-    Returns:
-        episode: Episode number
-        rewards_history: List of episode rewards
-        rps_history: List of reward-per-step values
+    Load training checkpoint (Backward compatible)
     """
-    # Load with weights_only=False since we're loading training data too
-    # This is safe if you trust your own checkpoints
     checkpoint = torch.load(
         checkpoint_path, 
         map_location=agent.device,
-        weights_only=False  # Required for PyTorch 2.6+
+        weights_only=False
     )
     
     agent.load_state_dict(checkpoint['agent_state'])
     
+    # Backward compatibility for older checkpoints
+    rewards = checkpoint.get('rewards_history', [])
+    rps = checkpoint.get('rps_history', [])
+    loss = checkpoint.get('loss_history', [0.0] * len(rewards))
+    epsilon = checkpoint.get('epsilon_history', [0.1] * len(rewards))
+    
     return (
         checkpoint['episode'],
-        checkpoint['rewards_history'],
-        checkpoint['rps_history']
+        rewards,
+        rps,
+        loss,
+        epsilon
     )
 
-
 def find_latest_checkpoint(checkpoint_dir):
-    """
-    Find the latest checkpoint in a directory
-    
-    Args:
-        checkpoint_dir: Directory to search
-        
-    Returns:
-        Path to latest checkpoint, or None if none found
-    """
+    """Find the latest checkpoint in a directory"""
     checkpoint_dir = Path(checkpoint_dir)
     if not checkpoint_dir.exists():
         return None
@@ -117,112 +81,67 @@ def find_latest_checkpoint(checkpoint_dir):
     if not checkpoints:
         return None
     
-    # Prefer final_model.pth, otherwise take latest by modification time
     final_model = checkpoint_dir / "final_model.pth"
     if final_model.exists():
         return final_model
     
     return max(checkpoints, key=lambda p: p.stat().st_mtime)
 
-
-def plot_training_results(rewards_history, rps_history, save_path):
+def plot_training_results(rewards, rps, losses, epsilons, save_path):
     """
-    Plot and save training results
-    
-    Args:
-        rewards_history: List of episode rewards
-        rps_history: List of reward-per-step values
-        save_path: Path to save plot
+    Plot 4-panel training results
     """
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     
-    # Plot 1: Cumulative Reward
-    axes[0].plot(rewards_history, label='Reward', alpha=0.6, linewidth=1)
-    if len(rewards_history) > 10:
-        window = min(20, len(rewards_history) // 5)
-        moving_avg = np.convolve(
-            rewards_history, 
-            np.ones(window)/window, 
-            mode='valid'
-        )
-        axes[0].plot(
-            range(window-1, len(rewards_history)), 
-            moving_avg, 
-            label=f'{window}-episode MA', 
-            linewidth=2,
-            color='red'
-        )
-    axes[0].set_title('Cumulative Reward per Episode')
-    axes[0].set_xlabel('Episode')
-    axes[0].set_ylabel('Reward')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+    # 1. Rewards
+    ax = axes[0, 0]
+    ax.plot(rewards, label='Raw', alpha=0.3, color='blue')
+    if len(rewards) > 10:
+        window = min(50, len(rewards) // 5)
+        avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
+        ax.plot(range(window-1, len(rewards)), avg, label='Avg', color='blue', linewidth=2)
+    ax.set_title('Total Reward per Episode')
+    ax.grid(True, alpha=0.3)
     
-    # Plot 2: Reward Per Step (RPS)
-    axes[1].plot(rps_history, color='orange', label='RPS', alpha=0.6, linewidth=1)
-    if len(rps_history) > 10:
-        window = min(20, len(rps_history) // 5)
-        moving_avg = np.convolve(
-            rps_history, 
-            np.ones(window)/window, 
-            mode='valid'
-        )
-        axes[1].plot(
-            range(window-1, len(rps_history)), 
-            moving_avg, 
-            label=f'{window}-episode MA', 
-            linewidth=2,
-            color='darkred'
-        )
-    axes[1].set_title('Reward Per Step (RPS)')
-    axes[1].set_xlabel('Episode')
-    axes[1].set_ylabel('RPS')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    # 2. RPS
+    ax = axes[0, 1]
+    ax.plot(rps, label='Raw', alpha=0.3, color='orange')
+    if len(rps) > 10:
+        window = min(50, len(rps) // 5)
+        avg = np.convolve(rps, np.ones(window)/window, mode='valid')
+        ax.plot(range(window-1, len(rps)), avg, label='Avg', color='orange', linewidth=2)
+    ax.set_title('Reward Per Step (RPS)')
+    ax.grid(True, alpha=0.3)
     
-    # Plot 3: Training Progress
-    axes[2].plot(rewards_history, color='green', alpha=0.4, linewidth=1)
-    if len(rewards_history) > 10:
-        window = min(20, len(rewards_history) // 5)
-        moving_avg = np.convolve(
-            rewards_history, 
-            np.ones(window)/window, 
-            mode='valid'
-        )
-        axes[2].plot(
-            range(window-1, len(rewards_history)), 
-            moving_avg, 
-            linewidth=2,
-            color='darkgreen',
-            label='Smoothed Reward'
-        )
-    axes[2].set_title('Training Progress')
-    axes[2].set_xlabel('Episode')
-    axes[2].set_ylabel('Reward')
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
+    # 3. Loss
+    ax = axes[1, 0]
+    ax.plot(losses, label='Loss', color='red', alpha=0.6)
+    ax.set_yscale('log') # Log scale is usually better for loss
+    ax.set_title('Avg Training Loss (Log Scale)')
+    ax.grid(True, alpha=0.3)
+    
+    # 4. Epsilon
+    ax = axes[1, 1]
+    ax.plot(epsilons, label='Epsilon', color='green', linewidth=2)
+    ax.set_title('Exploration Rate (Epsilon)')
+    ax.set_ylim(0, 1.1)
+    ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=100)
     plt.close()
-
 
 class Logger:
     """Simple logger to write to both console and file"""
-    
     def __init__(self, log_path):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Clear existing log
         with open(self.log_path, 'w') as f:
             f.write(f"Training started at {datetime.now()}\n")
             f.write("="*60 + "\n\n")
     
     def log(self, message, print_console=True):
-        """Write message to log file and optionally print to console"""
         if print_console:
             print(message)
-        
         with open(self.log_path, 'a') as f:
             f.write(message + "\n")
