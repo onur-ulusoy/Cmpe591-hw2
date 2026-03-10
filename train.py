@@ -81,15 +81,22 @@ def train(resume_from=None):
         
         while not done:
             action = agent.select_action(state)
-            _, reward, is_terminal, is_truncated = env.step(action)
+            _, raw_reward, is_terminal, is_truncated = env.step(action)
+            
+            # --- FIX: Reward Scaling ---
+            # Divide by 10.0 to keep Q-values small (~0.5 to ~2.0)
+            reward = raw_reward * 0.1 
             
             next_state = torch.tensor(env.high_level_state(), dtype=torch.float32)
             done = is_terminal or is_truncated
             
+            # Push SCALED reward to buffer
             agent.buffer.push(state, action, reward, next_state, is_terminal)
+            
             state = next_state
             
-            cumulative_reward += reward
+            # Keep track of RAW reward for logging (so graphs look normal)
+            cumulative_reward += raw_reward 
             episode_steps += 1
             global_step += 1
             
