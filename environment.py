@@ -12,7 +12,6 @@ from scipy.spatial.transform import Slerp
 IKResult = collections.namedtuple(
     'IKResult', ['qpos', 'err_norm', 'steps', 'success'])
 
-
 class BaseEnv:
     def __init__(self, render_mode="gui") -> None:
         self._gripper_idx = 6
@@ -20,6 +19,7 @@ class BaseEnv:
         self._render_mode = render_mode
         self.viewer = None
         self._n_joints = 7
+        # UR5e home position
         self._init_position = [-np.pi/2, -np.pi/2, np.pi/2, -2.07, 0, 0, 0]
         self._joint_names = [
             "ur5e/shoulder_pan_joint",
@@ -30,14 +30,23 @@ class BaseEnv:
             "ur5e/wrist_3_joint",
             "ur5e/robotiq_2f85/right_driver_joint"
         ]
-        self.reset()
-        self._joint_qpos_idxs = [self.model.joint(x).qposadr for x in self._joint_names]
         self._ee_site = "ur5e/robotiq_2f85/gripper_site"
+        
+        # Cache joint addresses for efficiency
+        # We need these initialized BEFORE reset is called
+        self.model = None # Placeholder until reset
+        
+        self.reset()
+        
+        # Cache indices after model is loaded
+        self._joint_ids = [self.model.joint(x).id for x in self._joint_names]
+        self._joint_qpos_idxs = [self.model.joint(x).qposadr for x in self._joint_names]
+        self._dof_ids = [self.model.joint(x).dofadr for x in self._joint_names]
 
     def reset(self):
-        if hasattr(self, "model"):
+        if hasattr(self, "model") and self.model is not None:
             del self.model
-        if hasattr(self, "data"):
+        if hasattr(self, "data") and self.data is not None:
             del self.data
         if self.viewer is not None:
             if self._render_mode == "offscreen":
@@ -50,6 +59,7 @@ class BaseEnv:
         assets = scene.get_assets()
         self.model = mujoco.MjModel.from_xml_string(xml_string, assets=assets)
         self.data = mujoco.MjData(self.model)
+        
         if self._render_mode == "gui":
             self.viewer = mujoco_viewer.MujocoViewer(self.model, self.data)
             self.viewer.cam.fixedcamid = 0
@@ -73,35 +83,6 @@ class BaseEnv:
         if self._render_mode == "gui":
             self.viewer.render()
 
-    def _get_joint_position(self):
-        position = np.zeros(self._n_joints)
-        for idx in range(self._n_joints):
-            position[idx] = self.data.qpos[self._joint_qpos_idxs[idx]]
-            if idx == self._gripper_idx:
-                position[idx] /= self._gripper_norm
-        return position
-
-    def _set_joint_position(self, position_dict, max_iters=2000, threshold=0.05):
-        for idx in position_dict:
-            if idx == self._gripper_idx:
-                self.data.ctrl[idx] = position_dict[idx]*255
-            else:
-                self.data.ctrl[idx] = position_dict[idx]
-
-        max_error = 100*threshold
-        it = 0
-        while max_error > threshold:
-            it += 1
-            self._step()
-            max_error = 0
-            current_position = self._get_joint_position()
-            for idx in position_dict:
-                error = abs(current_position[idx] - position_dict[idx])
-                if error > max_error:
-                    max_error = error
-            if it > max_iters:
-                break
-
     def _get_ee_pose(self):
         ee_position = self.data.site(self._ee_site).xpos
         ee_rotation = self.data.site(self._ee_site).xmat
@@ -109,63 +90,60 @@ class BaseEnv:
         mujoco.mju_mat2Quat(ee_orientation, ee_rotation)
         return ee_position, ee_orientation
 
-    def _set_ee_pose(self, position, rotation=None, orientation=None, max_iters=2000, threshold=0.01):
-        if rotation is not None and orientation is not None:
-            raise Exception("Only one of rotation or orientation can be set")
-        quat = None
+    def _set_ee_in_cartesian(self, position, rotation=None, max_iters=100, threshold=0.01):
+        """
+        Uses the robust qpos_from_site_pose solver to find target joint angles,
+        then sets the robot controls to those angles.
+        """
+        # 1. Convert Euler rotation to Quaternion (w, x, y, z)
+        target_quat = None
         if rotation is not None:
-            quat = R.from_euler("xyz", rotation, degrees=True).as_quat()
-        elif orientation is not None:
-            quat = orientation
-        qpos = qpos_from_site_pose(self.model, self.data, self._ee_site,
-                                   position, quat, joint_names=self._joint_names[:-1]).qpos
-        qdict = {i: qpos[q_idx][0] for i, q_idx in enumerate(self._joint_qpos_idxs[:-1])}
-
-        max_error = 100*threshold
-        it = 0
-        while max_error > threshold:
-            it += 1
-            self._step()
-            max_error = 0
-            curr_pos, curr_quat = self._get_ee_pose()
-            max_error += np.linalg.norm(np.array(position) - curr_pos)
-
-            # this part is taken from dm_control
-            # https://github.com/deepmind/dm_control/blob/main/dm_control/utils/inverse_kinematics.py#L165
-            if quat is not None:
-                neg_quat = np.zeros(4)
-                mujoco.mju_negQuat(neg_quat, curr_quat)
-                error_quat = np.zeros(4)
-                mujoco.mju_mulQuat(error_quat, quat, neg_quat)
-                error_vel = np.zeros(3)
-                mujoco.mju_quat2Vel(error_vel, error_quat, 1)
-                max_error += np.linalg.norm(error_vel)
-            for idx in qdict:
-                self.data.ctrl[idx] = qpos[self._joint_qpos_idxs[idx]]
-            if it > max_iters:
-                break
-
-    def _set_ee_in_cartesian(self, position, rotation=None, max_iters=2000, threshold=0.01, n_splits=30):
-        ee_position, ee_orientation = self._get_ee_pose()
-        position_traj = np.linspace(ee_position, position, n_splits+1)[1:]
-        if rotation is not None:
-            target_orientation = R.from_euler("xyz", rotation, degrees=True).as_quat()
-            r = R.from_quat([ee_orientation, target_orientation])
-            slerp = Slerp([0, 1], r)
-            orientation_traj = slerp(np.linspace(0, 1, n_splits+1)[1:]).as_quat()
+            # Scipy returns (x, y, z, w)
+            r = R.from_euler("xyz", rotation, degrees=True)
+            scipy_quat = r.as_quat() 
+            # Convert to MuJoCo (w, x, y, z)
+            target_quat = np.array([scipy_quat[3], scipy_quat[0], scipy_quat[1], scipy_quat[2]])
         else:
-            orientation_traj = [ee_orientation]*n_splits
+            # If no rotation provided, keep current
+            _, current_quat = self._get_ee_pose()
+            target_quat = current_quat
 
-        self._follow_ee_trajectory(position_traj, orientation_traj,
-                                   max_iters=max_iters, threshold=threshold)
+        # 2. Call the Robust IK Solver
+        # We only care about the first 6 joints (the arm), not the gripper
+        arm_joint_names = self._joint_names[:6]
+        
+        result = qpos_from_site_pose(
+            self.model,
+            self.data,
+            site_name=self._ee_site,
+            target_pos=position,
+            target_quat=target_quat,
+            joint_names=arm_joint_names,
+            max_steps=max_iters,
+            tol=1e-4,
+            inplace=False # Calculate on a copy, don't teleport physics yet
+        )
 
-    def _follow_ee_trajectory(self, position_traj, orientation_traj, max_iters=2000, threshold=0.01):
-        n_splits = len(position_traj)
-        for position, orientation in zip(position_traj, orientation_traj):
-            self._set_ee_pose(position, orientation=orientation,
-                              max_iters=max_iters//n_splits, threshold=threshold)
-
-
+        if result.success:
+            # 3. Apply the solution to the controls
+            # We map the calculated qpos back to the control inputs
+            # The UR5e actuators in this XML are typically Position-controlled
+            for i, name in enumerate(arm_joint_names):
+                # Get the address in qpos array
+                qpos_idx = self.model.joint(name).qposadr
+                # Set the control input (actuator) to the target joint angle
+                self.data.ctrl[i] = result.qpos[qpos_idx]
+            
+            # 4. Step the simulation to physically move there
+            # Since we set the target position for the PID controllers, 
+            # we need to step physics to let the motors work.
+            # 50 steps is usually enough for the PID to settle.
+            mujoco.mj_step(self.model, self.data, nstep=50)
+            
+            if self._render_mode == "gui":
+                self.viewer.render()
+        else:
+            print(f"Warning: IK failed to converge (Err: {result.err_norm:.4f})")
 def create_tabletop_scene():
     scene = create_empty_scene()
     add_camera_to_scene(scene, "frontface", [2.5, 0., 2.0], [-1.5, 0, 0])
