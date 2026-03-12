@@ -18,15 +18,15 @@ class DiscreteController:
         self.target_pos = self.home_pos.copy()
 
         print("\n" + "="*60)
-        print("🕹️  DISCRETE CONTROLLER (Standard WASD)")
+        print("🕹️  DISCRETE CONTROLLER (W/S Reversed)")
         print("="*60)
         print(f"  Step Size: {self.delta}m")
-        print("  [W] : Forward (+X)")
-        print("  [S] : Backward (-X)")
-        print("  [A] : Left     (-Y)")
-        print("  [D] : Right    (+Y)")
-        print("  [Q] : Up       (+Z)")
-        print("  [E] : Down     (-Z)")
+        print("  [W] : Backward / Into Screen (-X)")
+        print("  [S] : Forward / Towards You  (+X)")
+        print("  [A] : Left                   (-Y)")
+        print("  [D] : Right                  (+Y)")
+        print("  [Q] : Up                     (+Z)")
+        print("  [E] : Down                   (-Z)")
         print("  [SPACE] : Print Position")
         print("  [ESC]   : Quit")
         print("="*60 + "\n")
@@ -52,20 +52,20 @@ class DiscreteController:
             step = np.zeros(3)
             move_name = ""
             
-            # --- STANDARD WASD CONTROLS ---
+            # --- W/S REVERSED, A/D STANDARD ---
             if key == glfw.KEY_W:
-                step[0] = self.delta   # Forward (+X)
-                move_name = "Forward (+X)"
-            elif key == glfw.KEY_S:
                 step[0] = -self.delta  # Backward (-X)
                 move_name = "Backward (-X)"
+            elif key == glfw.KEY_S:
+                step[0] = self.delta   # Forward (+X)
+                move_name = "Forward (+X)"
             elif key == glfw.KEY_A:
                 step[1] = -self.delta  # Left (-Y)
                 move_name = "Left (-Y)"
             elif key == glfw.KEY_D:
                 step[1] = self.delta   # Right (+Y)
                 move_name = "Right (+Y)"
-            # ------------------------------
+            # ----------------------------------
 
             elif key == glfw.KEY_Q:
                 step[2] = self.delta
