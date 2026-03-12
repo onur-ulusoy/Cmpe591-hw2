@@ -33,14 +33,17 @@ def train(resume_from=None):
     writer = SummaryWriter(log_dir=checkpoint_dir / "tensorboard")
     
     logger.log("="*60)
-    logger.log("DQN TRAINING - FULL DEBUG MODE")
+    logger.log("DQN TRAINING - 6-DOF CARTESIAN (Detailed Log)")
     logger.log("="*60)
     logger.log(f"Device: {HYPERPARAMS['device']}")
     logger.log(f"Checkpoint directory: {checkpoint_dir}")
     logger.log("="*60)
     
+    # CRITICAL: The new environment returns 9 values (EE_xyz, Obj_xyz, Goal_xyz)
+    state_dim = 9
+    
     env = Hw2Env(n_actions=ENV_CONFIG["n_actions"], render_mode=ENV_CONFIG["render_mode_train"])
-    agent = DQNAgent(n_actions=ENV_CONFIG["n_actions"], device=HYPERPARAMS['device'])
+    agent = DQNAgent(n_actions=ENV_CONFIG["n_actions"], device=HYPERPARAMS['device'], state_dim=state_dim)
     
     # History Dictionary
     history = {
@@ -65,9 +68,16 @@ def train(resume_from=None):
 
     for episode in range(start_episode, HYPERPARAMS["n_episodes"]):
         episode_start_time = time.time()
-        env.reset()
         
-        state = torch.tensor(env.high_level_state(), dtype=torch.float32)
+        # 1. Reset Environment (New env returns state directly)
+        state_np = env.reset()
+        
+        # Ensure state is a Tensor
+        if isinstance(state_np, np.ndarray):
+            state = torch.tensor(state_np, dtype=torch.float32)
+        else:
+            # Fallback if reset() returns nothing (old env version)
+            state = torch.tensor(env.high_level_state(), dtype=torch.float32)
         
         done = False
         cumulative_reward = 0.0
@@ -81,13 +91,15 @@ def train(resume_from=None):
         
         while not done:
             action = agent.select_action(state)
-            _, raw_reward, is_terminal, is_truncated = env.step(action)
             
-            # --- FIX: Reward Scaling ---
+            # 2. Step (New env returns next_state directly)
+            next_state_np, raw_reward, is_terminal, is_truncated = env.step(action)
+            
+            # --- Reward Scaling ---
             # Divide by 10.0 to keep Q-values small (~0.5 to ~2.0)
             reward = raw_reward * 0.1 
             
-            next_state = torch.tensor(env.high_level_state(), dtype=torch.float32)
+            next_state = torch.tensor(next_state_np, dtype=torch.float32)
             done = is_terminal or is_truncated
             
             # Push SCALED reward to buffer
@@ -107,6 +119,10 @@ def train(resume_from=None):
                 ep_q += q_val
                 ep_grad += grad
                 update_counts += 1
+
+            # Decay Epsilon
+            if global_step % HYPERPARAMS["epsilon_decay_iter"] == 0:
+                agent.decay_epsilon()
 
         # Averages for this episode
         avg_loss = ep_loss / update_counts if update_counts > 0 else 0.0
@@ -132,7 +148,7 @@ def train(resume_from=None):
         writer.add_scalar('Train/Gradient_Norm', avg_grad, episode)
         writer.add_scalar('Train/LR', current_lr, episode)
         
-        # Console Log
+        # Console Log (Detailed)
         episode_time = time.time() - episode_start_time
         elapsed_time = time.time() - training_start_time
         episodes_done = episode - start_episode + 1
