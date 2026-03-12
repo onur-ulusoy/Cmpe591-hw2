@@ -1,14 +1,13 @@
 """
-Play trained DQN agent with GUI visualization
-Uses multiprocessing to run offscreen environment in separate process
+Play trained DQN agent.
+Supports GUI visualization, automatic checkpoint loading, and CLI arguments.
 """
 import sys
-import numpy as np
-import torch
-from pathlib import Path
 import time
-import multiprocessing as mp
-from queue import Empty
+import torch
+import numpy as np
+from pathlib import Path
+import argparse
 
 from homework2 import Hw2Env
 from agent import DQNAgent
@@ -19,101 +18,33 @@ from utils import (
     load_checkpoint
 )
 
-
-def offscreen_worker(checkpoint_path, seed_queue, action_queue):
-    """
-    Worker process that runs offscreen environment and agent
-    Receives seeds, returns actions
-    """
-    # Load agent
+def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, render_mode="gui"):
+    print(f"\nLoading model from: {checkpoint_path}")
+    
+    # 1. Initialize Agent
+    # CRITICAL: state_dim must match the training (9 for EE+Obj+Goal)
+    state_dim = 9 
     agent = DQNAgent(
         n_actions=ENV_CONFIG["n_actions"], 
-        device=HYPERPARAMS['device']
+        device=HYPERPARAMS['device'],
+        state_dim=state_dim
     )
+    
+    # 2. Load Weights
     load_checkpoint(agent, checkpoint_path)
     
-    # Create offscreen environment
-    env = Hw2Env(n_actions=ENV_CONFIG["n_actions"], render_mode="offscreen")
+    # 3. Set to Evaluation Mode (Greedy)
+    agent.epsilon = 0.0
     
-    while True:
-        try:
-            # Get seed for new episode
-            msg = seed_queue.get(timeout=1.0)
-            
-            if msg == "STOP":
-                break
-            
-            seed = msg
-            
-            # Reset environment with seed
-            env._create_scene(seed=seed)
-            env.reset()
-            
-            # --- FIX: Use high_level_state instead of state() (pixels) ---
-            state_np = env.high_level_state()
-            state = torch.tensor(state_np, dtype=torch.float32)
-            
-            # Send ready signal
-            action_queue.put("READY")
-            
-            # Play episode
-            done = False
-            while not done:
-                # Select action
-                action = agent.select_action(state, eval_mode=True)
-                
-                # Send action to main process
-                action_queue.put(action)
-                
-                # Wait for step confirmation
-                cmd = seed_queue.get()
-                if cmd == "STOP":
-                    break
-                
-                # Step environment
-                # Note: We ignore the returned state (pixels)
-                _, reward, is_terminal, is_truncated = env.step(action)
-                done = is_terminal or is_truncated
-                
-                # --- FIX: Update state with high_level_state ---
-                next_state_np = env.high_level_state()
-                state = torch.tensor(next_state_np, dtype=torch.float32)
-                
-                # Send done status
-                action_queue.put(("DONE", is_terminal, is_truncated))
-            
-        except Empty:
-            continue
-        except Exception as e:
-            print(f"Worker error: {e}")
-            action_queue.put(("ERROR", str(e)))
-            break
-
-
-def play_episodes_with_agent(checkpoint_path, n_episodes=5, verbose=True, delay=0.05):
-    """
-    Play episodes with trained agent using GUI
+    # Try to set network to eval mode if possible (handles BatchNorm/Dropout)
+    if hasattr(agent, 'policy_net'):
+        agent.policy_net.eval()
+    elif hasattr(agent, 'q_net'):
+        agent.q_net.eval()
     
-    Args:
-        checkpoint_path: Path to checkpoint file
-        n_episodes: Number of episodes to play
-        verbose: Print detailed step information
-        delay: Delay between steps (seconds)
-    """
-    print("\n" + "="*60)
-    print(f"PLAYING {n_episodes} EPISODES WITH TRAINED AGENT")
-    print("GUI Mode - Watch the visualization window!")
-    print("="*60)
-    
-    # Start worker process
-    seed_queue = mp.Queue()
-    action_queue = mp.Queue()
-    
-    worker = mp.Process(
-        target=offscreen_worker,
-        args=(checkpoint_path, seed_queue, action_queue)
-    )
-    worker.start()
+    # 4. Initialize Environment
+    print(f"Initializing Environment (Mode: {render_mode})...")
+    env = Hw2Env(n_actions=ENV_CONFIG["n_actions"], render_mode=render_mode)
     
     results = {
         'rewards': [],
@@ -121,198 +52,143 @@ def play_episodes_with_agent(checkpoint_path, n_episodes=5, verbose=True, delay=
         'steps': [],
         'successes': 0
     }
-    
-    try:
-        for episode in range(n_episodes):
-            # Generate seed
-            seed = np.random.randint(0, 1000000)
+
+    for episode in range(n_episodes):
+        print(f"\n{'='*40}")
+        print(f"Episode {episode + 1} / {n_episodes}")
+        print(f"{'='*40}")
+        
+        # Reset Env
+        # Handle cases where reset() returns tuple or just state
+        reset_res = env.reset()
+        if isinstance(reset_res, tuple):
+            state_np = reset_res[0]
+        else:
+            state_np = reset_res
+
+        # Fallback if reset returned None or empty (older env versions)
+        if state_np is None or (isinstance(state_np, np.ndarray) and state_np.size == 0):
+             state_np = env.high_level_state()
+
+        state = torch.tensor(state_np, dtype=torch.float32)
+
+        done = False
+        step_count = 0
+        ep_reward = 0.0
+        
+        while not done:
+            # Select Action (Greedy)
+            # We use eval_mode=True if your select_action supports it
+            try:
+                action = agent.select_action(state, eval_mode=True)
+            except TypeError:
+                # Fallback if select_action doesn't take eval_mode
+                action = agent.select_action(state)
             
-            # Create GUI environment
-            env_gui = Hw2Env(n_actions=ENV_CONFIG["n_actions"], render_mode="gui")
-            env_gui._create_scene(seed=seed)
-            env_gui.reset()
+            # Step Environment
+            step_res = env.step(action)
             
-            # Send seed to worker
-            seed_queue.put(seed)
+            # Handle different step() return signatures (3 or 4 or 5 values)
+            if len(step_res) == 4:
+                next_state_np, reward, terminal, truncated = step_res
+            elif len(step_res) == 5:
+                next_state_np, reward, terminal, truncated, _ = step_res
+            else:
+                raise ValueError(f"Unexpected step return length: {len(step_res)}")
+
+            # Render
+            if render_mode == "gui" and hasattr(env, 'viewer') and env.viewer is not None:
+                env.viewer.render()
             
-            # Wait for worker ready
-            msg = action_queue.get()
-            if msg != "READY":
-                print(f"Worker error: {msg}")
-                break
+            # Update State
+            state = torch.tensor(next_state_np, dtype=torch.float32)
             
-            done = False
-            cumulative_reward = 0.0
-            episode_steps = 0
+            ep_reward += reward
+            step_count += 1
+            done = terminal or truncated
             
-            print(f"\n{'='*60}")
-            print(f"Episode {episode + 1}/{n_episodes}")
-            print(f"{'='*60}")
+            if verbose:
+                print(f"\rStep {step_count:03d} | Action: {action} | Reward: {reward:.4f}", end="")
             
-            while not done:
-                # Get action from worker
-                action = action_queue.get()
-                
-                if isinstance(action, tuple) and action[0] == "ERROR":
-                    print(f"Worker error: {action[1]}")
-                    break
-                
-                if verbose:
-                    print(f"Step {episode_steps + 1}: Action={action}")
-                
-                # Step GUI environment
-                _, reward, is_terminal, is_truncated = env_gui.step(action)
-                
-                if verbose:
-                    print(f"  Reward: {reward:.4f}")
-                    try:
-                        high_level = env_gui.high_level_state()
-                        print(f"  EE pos: [{high_level[0]:.3f}, {high_level[1]:.3f}]")
-                        print(f"  Obj pos: [{high_level[2]:.3f}, {high_level[3]:.3f}]")
-                        print(f"  Goal pos: [{high_level[4]:.3f}, {high_level[5]:.3f}]")
-                    except:
-                        pass
-                
-                cumulative_reward += reward
-                episode_steps += 1
-                
-                # Signal worker to continue
-                seed_queue.put("STEP")
-                
-                # Get done status from worker
-                status = action_queue.get()
-                if isinstance(status, tuple) and status[0] == "DONE":
-                    _, worker_terminal, worker_truncated = status
-                    done = worker_terminal or worker_truncated
-                
-                # Delay for visualization
+            # Slow down for visualization
+            if render_mode == "gui":
                 time.sleep(delay)
+
+        # Episode End Stats
+        print(f"\nDone. Total Reward: {ep_reward:.4f}")
+        
+        rps = ep_reward / step_count if step_count > 0 else 0
+        results['rewards'].append(ep_reward)
+        results['rps'].append(rps)
+        results['steps'].append(step_count)
+
+        if terminal:
+            print(">>> SUCCESS! Goal Reached.")
+            results['successes'] += 1
+        elif truncated:
+            print(">>> TIMEOUT.")
             
-            # Clean up GUI environment
-            del env_gui
-            
-            # Episode summary
-            rps = cumulative_reward / episode_steps if episode_steps > 0 else 0
-            results['rewards'].append(cumulative_reward)
-            results['rps'].append(rps)
-            results['steps'].append(episode_steps)
-            
-            # if is_terminal:
-            #     results['successes'] += 1
-            #     status = "✓ SUCCESS - Goal reached!"
-            # else:
-            #     status = "✗ FAILED - Timeout"
-            
-            # print(f"\n{'-'*60}")
-            # print(f"Episode Result: {status}")
-            # print(f"  Total Reward: {cumulative_reward:.4f}")
-            # print(f"  RPS: {rps:.4f}")
-            # print(f"  Steps: {episode_steps}")
-            # print(f"{'-'*60}")
-            
-            # Pause between episodes
-            time.sleep(1.0)
-    
-    finally:
-        # Stop worker
-        seed_queue.put("STOP")
-        worker.join(timeout=5)
-        if worker.is_alive():
-            worker.terminate()
-    
-    # Overall summary
+        time.sleep(0.5) 
+
+    # --- Final Summary ---
     print("\n" + "="*60)
     print("OVERALL SUMMARY")
     print("="*60)
     print(f"Episodes played: {n_episodes}")
-    print(f"Success rate: {results['successes']}/{n_episodes} "
-          f"({100*results['successes']/n_episodes:.1f}%)")
-    print(f"Average reward: {np.mean(results['rewards']):.4f} ± "
-          f"{np.std(results['rewards']):.4f}")
-    print(f"Average RPS: {np.mean(results['rps']):.4f} ± "
-          f"{np.std(results['rps']):.4f}")
-    print(f"Average steps: {np.mean(results['steps']):.1f} ± "
-          f"{np.std(results['steps']):.1f}")
+    print(f"Success rate:    {results['successes']}/{n_episodes} ({100*results['successes']/n_episodes:.1f}%)")
+    print(f"Average reward:  {np.mean(results['rewards']):.4f} ± {np.std(results['rewards']):.4f}")
+    print(f"Average RPS:     {np.mean(results['rps']):.4f}")
+    print(f"Average steps:   {np.mean(results['steps']):.1f}")
     print("="*60)
-    
-    return results
-
 
 def main():
-    """Main entry point"""
-    print("="*60)
-    print("DQN AGENT PLAYER - GUI MODE WITH TRAINED AGENT")
-    print("="*60)
+    parser = argparse.ArgumentParser(description="Play trained DQN Agent")
     
-    # Parse arguments
+    parser.add_argument("checkpoint_dir", nargs="?", type=str, default=None, 
+                        help="Path to checkpoint directory (default: latest)")
+    parser.add_argument("--episodes", "-n", type=int, default=5, help="Number of episodes")
+    parser.add_argument("--delay", "-d", type=float, default=0.05, help="Delay between steps (seconds)")
+    parser.add_argument("--no-gui", action="store_true", help="Run without GUI (headless)")
+    parser.add_argument("--verbose", "-v", type=bool, default=True, help="Print step details")
+
+    args = parser.parse_args()
+
+    print("="*60)
+    print("DQN PLAYER")
+    print("="*60)
+
+    # 1. Locate Checkpoint
     checkpoint_dir = None
-    n_episodes = 5
-    verbose = True
-    delay = 0.05
-    
-    if len(sys.argv) > 1:
-        checkpoint_dir = Path(sys.argv[1])
-    
-    if len(sys.argv) > 2:
-        try:
-            n_episodes = int(sys.argv[2])
-        except ValueError:
-            pass
-    
-    if len(sys.argv) > 3:
-        verbose = sys.argv[3].lower() == 'true'
-    
-    if len(sys.argv) > 4:
-        try:
-            delay = float(sys.argv[4])
-        except ValueError:
-            pass
-    
-    # Find checkpoint directory
-    if checkpoint_dir is None:
-        print("No checkpoint specified, looking for latest...")
-        checkpoint_dir = get_latest_checkpoint_dir()
-        if checkpoint_dir is None:
-            print("Error: No checkpoints found!")
-            print("Please train a model first: python3 train.py")
-            return
-        print(f"Found latest checkpoint: {checkpoint_dir}")
-    else:
+    if args.checkpoint_dir:
+        checkpoint_dir = Path(args.checkpoint_dir)
         if not checkpoint_dir.exists():
-            print(f"Error: Checkpoint directory not found: {checkpoint_dir}")
+            print(f"❌ Error: Directory not found: {checkpoint_dir}")
             return
+    else:
+        print("Looking for latest checkpoint...")
+        checkpoint_dir = get_latest_checkpoint_dir()
     
-    # Find checkpoint file
+    if checkpoint_dir is None:
+        print("❌ Error: No checkpoint directory found.")
+        print("Run training first: python3 train.py")
+        return
+
     checkpoint_path = find_latest_checkpoint(checkpoint_dir)
     if checkpoint_path is None:
-        print(f"Error: No checkpoint files found in {checkpoint_dir}")
+        print(f"❌ Error: No .pth files found in {checkpoint_dir}")
         return
-    
-    print(f"Loading checkpoint: {checkpoint_path}")
-    print("="*60 + "\n")
-    
-    print(f"✓ Starting worker process with trained agent")
-    print(f"✓ Will use greedy policy (eval mode)")
-    print(f"\n🎮 Starting GUI visualization with YOUR trained agent...\n")
-    
-    # Play episodes
-    play_episodes_with_agent(checkpoint_path, n_episodes=n_episodes, verbose=verbose, delay=delay)
 
+    # 2. Determine Render Mode
+    render_mode = "offscreen" if args.no_gui else "gui"
+
+    # 3. Run
+    play_episodes(
+        checkpoint_path, 
+        n_episodes=args.episodes, 
+        verbose=args.verbose, 
+        delay=args.delay,
+        render_mode=render_mode
+    )
 
 if __name__ == "__main__":
-    # Required for multiprocessing on some systems
-    mp.set_start_method('spawn', force=True)
-    
-    print("\nUsage: python3 play_gui.py [checkpoint_dir] [n_episodes] [verbose] [delay]")
-    print("  checkpoint_dir: Path to checkpoint (default: latest)")
-    print("  n_episodes: Number of episodes (default: 5)")
-    print("  verbose: True or False (default: True)")
-    print("  delay: Seconds between steps (default: 0.05)")
-    print("\nExamples:")
-    print("  python3 play_gui.py                                    # Use latest")
-    print("  python3 play_gui.py checkpoints/2026-03-07_17-59-32    # Specific")
-    print("  python3 play_gui.py checkpoints/2026-03-07_17-59-32 10 # 10 episodes")
-    print("  python3 play_gui.py checkpoints/2026-03-07_17-59-32 5 True 0.1 # Slower")
-    print("="*60 + "\n")
-    
     main()
