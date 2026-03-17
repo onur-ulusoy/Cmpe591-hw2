@@ -22,7 +22,6 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
     print(f"\nLoading model from: {checkpoint_path}")
     
     # 1. Initialize Agent
-    # CRITICAL: state_dim must match the training (9 for EE+Obj+Goal)
     state_dim = 9 
     agent = DQNAgent(
         n_actions=ENV_CONFIG["n_actions"], 
@@ -35,8 +34,6 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
     
     # 3. Set to Evaluation Mode (Greedy)
     agent.epsilon = 0.0
-    
-    # Try to set network to eval mode if possible (handles BatchNorm/Dropout)
     if hasattr(agent, 'policy_net'):
         agent.policy_net.eval()
     elif hasattr(agent, 'q_net'):
@@ -45,6 +42,9 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
     # 4. Initialize Environment
     print(f"Initializing Environment (Mode: {render_mode})...")
     env = Hw2Env(n_actions=ENV_CONFIG["n_actions"], render_mode=render_mode)
+    
+    # --- SUCCESS TOLERANCE ---
+    SUCCESS_DIST = 0.03 
     
     results = {
         'rewards': [],
@@ -59,14 +59,12 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
         print(f"{'='*40}")
         
         # Reset Env
-        # Handle cases where reset() returns tuple or just state
         reset_res = env.reset()
         if isinstance(reset_res, tuple):
             state_np = reset_res[0]
         else:
             state_np = reset_res
 
-        # Fallback if reset returned None or empty (older env versions)
         if state_np is None or (isinstance(state_np, np.ndarray) and state_np.size == 0):
              state_np = env.high_level_state()
 
@@ -77,18 +75,15 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
         ep_reward = 0.0
         
         while not done:
-            # Select Action (Greedy)
-            # We use eval_mode=True if your select_action supports it
+            # Select Action
             try:
                 action = agent.select_action(state, eval_mode=True)
             except TypeError:
-                # Fallback if select_action doesn't take eval_mode
                 action = agent.select_action(state)
             
             # Step Environment
             step_res = env.step(action)
             
-            # Handle different step() return signatures (3 or 4 or 5 values)
             if len(step_res) == 4:
                 next_state_np, reward, terminal, truncated = step_res
             elif len(step_res) == 5:
@@ -96,8 +91,32 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
             else:
                 raise ValueError(f"Unexpected step return length: {len(step_res)}")
 
-            # Render
-            if render_mode == "gui" and hasattr(env, 'viewer') and env.viewer is not None:
+            # --- 🔍 MANUAL SUCCESS CHECK ---
+            try:
+                obj_pos = env.data.body("obj1").xpos
+                goal_pos = env.data.site("goal").xpos
+                dist_to_goal = np.linalg.norm(obj_pos - goal_pos)
+                
+                if dist_to_goal < SUCCESS_DIST:
+                    print(f"\n🎯 SUCCESS! Object reached goal (Dist: {dist_to_goal:.4f})")
+                    
+                    # 1. Force one last render so you see it at the goal
+                    if render_mode == "gui" and hasattr(env, 'viewer') and env.viewer is not None:
+                        env.viewer.render()
+                    
+                    # 2. Wait 1 second to celebrate
+                    if render_mode == "gui":
+                        time.sleep(1.0)
+                        
+                    terminal = True
+                    done = True
+                    reward += 10.0 # Bonus for stats
+            except Exception:
+                pass
+            # -------------------------------
+
+            # Standard Render
+            if not done and render_mode == "gui" and hasattr(env, 'viewer') and env.viewer is not None:
                 env.viewer.render()
             
             # Update State
@@ -105,13 +124,15 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
             
             ep_reward += reward
             step_count += 1
-            done = terminal or truncated
             
-            if verbose:
-                print(f"\rStep {step_count:03d} | Action: {action} | Reward: {reward:.4f}", end="")
+            if not done:
+                done = terminal or truncated
             
-            # Slow down for visualization
-            if render_mode == "gui":
+            if verbose and not done:
+                print(f"\rStep {step_count:03d} | Act: {action} | Rw: {reward:.4f}", end="")
+            
+            # Standard delay between steps
+            if not done and render_mode == "gui":
                 time.sleep(delay)
 
         # Episode End Stats
@@ -123,11 +144,12 @@ def play_episodes(checkpoint_path, n_episodes=5, verbose=True, delay=0.05, rende
         results['steps'].append(step_count)
 
         if terminal:
-            print(">>> SUCCESS! Goal Reached.")
+            print(">>> STATUS: SUCCESS ✅")
             results['successes'] += 1
         elif truncated:
-            print(">>> TIMEOUT.")
+            print(">>> STATUS: TIMEOUT ⏳")
             
+        # Small pause before next episode starts
         time.sleep(0.5) 
 
     # --- Final Summary ---
