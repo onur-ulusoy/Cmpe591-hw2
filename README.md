@@ -312,16 +312,11 @@ Average Steps to Success: 12.6
 
 ### Demo Video
 
-
-
 https://github.com/user-attachments/assets/4ef96292-508a-47a5-bbd8-5d2bbe843ffb
-
-
 
 *Trained agent successfully pushing the red cube to the green goal marker across 5 randomized scenarios with 100% success rate.*
 
----
-
+**Note**: Average reward (12.68) is lower than training plot peaks (37+) because the play script terminates episodes immediately upon success, while training episodes continue until timeout, accumulating additional rewards.
 
 ## Implementation Details
 
