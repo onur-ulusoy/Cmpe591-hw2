@@ -248,24 +248,49 @@ Each checkpoint contains:
 
 View TensorBoard logs:
 ```bash
-tensorboard --logdir checkpoints/2026-03-12_11-17-00/tensorboard
+tensorboard --logdir=stable_ckpt
+```
+or
+```bash
+tensorboard --logdir=checkpoints
 ```
 
 Training plots are automatically generated in `plots/`:
 
+#### Reward Progression
 ![Reward Plot](stable_ckpt/2026-03-12_11-17-00/plots/reward.png)
 
+Total reward improves from -25 (early random policy) to 37+ (trained policy) over 5000 episodes. The black dashed line shows the 50-episode moving average, demonstrating steady learning progress with reduced variance after episode 2000.
+
+#### Reward Per Step (Efficiency)
 ![RPS Plot](stable_ckpt/2026-03-12_11-17-00/plots/rps.png)
 
+RPS measures reward efficiency per timestep. Increases from negative values to ~0.7, indicating the agent learns to complete tasks in fewer steps while maximizing reward.
+
+#### Training Loss
 ![Loss Plot](stable_ckpt/2026-03-12_11-17-00/plots/loss.png)
 
+TD-error (Huber loss) decreases rapidly in first 500 episodes, then stabilizes around 0.01-0.1. Log scale shows convergence to stable Q-value predictions.
+
+#### Exploration Rate (Epsilon)
 ![Epsilon Plot](stable_ckpt/2026-03-12_11-17-00/plots/epsilon.png)
 
+Epsilon decays from 1.0 (full exploration) to 0.05 (5% random actions) over 1200 episodes, balancing exploration and exploitation during learning.
+
+#### Q-Value Predictions
 ![Q-Values Plot](stable_ckpt/2026-03-12_11-17-00/plots/q_values.png)
 
+Average Q-values increase continuously from ~0.5 to ~2.0, reflecting the agent's growing confidence in achieving higher cumulative rewards. Stable growth indicates proper reward scaling.
+
+#### Gradient Norms
 ![Gradient Norms Plot](stable_ckpt/2026-03-12_11-17-00/plots/gradients.png)
 
+Gradient magnitudes remain stable throughout training due to gradient clipping (max norm: 10.0), preventing training instability.
+
+#### Learning Rate Schedule
 ![Learning Rate Plot](stable_ckpt/2026-03-12_11-17-00/plots/lr.png)
+
+LR decays from 0.0005 to 0.000325 via StepLR scheduler (gamma=0.9 every 500 updates), enabling fine-tuning in later stages while maintaining early learning speed.
 
 ## Results
 
@@ -282,13 +307,18 @@ Episode 5: 11.99 reward, SUCCESS (6 steps, dist: 0.020m)
 
 Success Rate: 5/5 (100.0%)
 Average Reward: 12.68
+Average Steps to Success: 12.6
 ```
 
 ### Demo Video
 
-![Demo Video](stable_ckpt/2026-03-12_11-17-00/video/2026-03-17%2014-39-25.mp4)
 
-The video shows the trained agent successfully pushing the red cube to the green goal marker in various randomized scenarios.
+<video src="stable_ckpt/2026-03-12_11-17-00/video/2026-03-17 14-39-25.mp4" controls width="100%"></video>
+
+*Trained agent successfully pushing the red cube to the green goal marker across 5 randomized scenarios with 100% success rate.*
+
+---
+
 
 ## Implementation Details
 
@@ -338,30 +368,6 @@ Key changes from base assignment:
 5. **Modified Reward**: Combines approach penalty, grasping bonus, and goal incentive
 6. **Reduced Max Steps**: 50 timesteps (vs original 100) for faster episodes
 
-## Training Tips
-
-1. **Monitor Q-Values**: Should stabilize around 1.0-2.0 after reward scaling
-2. **Check Gradient Norms**: Spikes indicate instability; consider lowering learning rate
-3. **Epsilon Decay**: Ensure sufficient exploration early (first 500-1000 episodes)
-4. **Loss Plateau**: Normal after initial decrease; focus on reward trends
-5. **Checkpoint Frequently**: Training can be unstable; save often for rollback
-
-## Troubleshooting
-
-**Issue**: Agent gets stuck in local minima
-- Solution: Increase epsilon_min or slow down decay rate
-
-**Issue**: Q-values explode
-- Solution: Reduce learning rate or increase reward scaling divisor
-
-**Issue**: No learning progress
-- Solution: Check reward function, verify state normalization, increase buffer size
-
-**Issue**: GUI freezes during play
-- Solution: Reduce `--render_dt` or use `smart_sleep()` implementation
-
-**Issue**: Checkpoint loading fails
-- Solution: Verify path, check for `weights_only=False` in torch.load()
 
 ## Differences from Original Assignment
 
@@ -378,15 +384,6 @@ Our implementation uses:
 - **Reward scaling** for Q-value stability
 
 These changes significantly accelerate training while maintaining task performance.
-
-## Future Improvements
-
-- Implement Prioritized Experience Replay (PER)
-- Add curriculum learning (start with closer objects)
-- Integrate continuous control (DDPG/TD3)
-- Multi-object manipulation
-- Hierarchical RL for complex tasks
-- Domain randomization for sim-to-real transfer
 
 ## References
 
